@@ -186,7 +186,7 @@ RevolvingUtilizationOfUnsecuredLines
 #### Client 10683
 
 <p align="center">
-  <img src="Client 10683.png" width="800" alt="Client 10683 SHAP Force Plot">
+  <img src="figures/Client 10683.png" width="800" alt="Client 10683 SHAP Force Plot">
 </p>
 
 For this client, features such as `RevolvingUtilizationOfUnsecuredLines_woe` and `age_woe` reduce the predicted risk, while `DebtRatio_woe` has a minor positive contribution. The final prediction is below the base value, indicating a relatively low probability of serious financial distress.
@@ -196,7 +196,7 @@ For this client, features such as `RevolvingUtilizationOfUnsecuredLines_woe` and
 #### Client 8652
 
 <p align="center">
-  <img src="Client 8652.png" width="800" alt="Client 8652 SHAP Force Plot">
+  <img src="figures/Client 8652.png" width="800" alt="Client 8652 SHAP Force Plot">
 </p>
 
 For this client, features such as `age_woe`, `DebtRatio_woe`, and `RevolvingUtilizationOfUnsecuredLines_woe` contribute to increasing the predicted risk. The final prediction is above the base value, suggesting a higher-than-average probability of serious financial distress.
@@ -208,7 +208,7 @@ For this client, features such as `age_woe`, `DebtRatio_woe`, and `RevolvingUtil
 #### SHAP Summary Plot
 
 <p align="center">
-  <img src="SHAP 1.png" width="800" alt="SHAP Summary Plot">
+  <img src="figures/SHAP 1.png" width="800" alt="SHAP Summary Plot">
 </p>
 
 The SHAP summary plot shows that `RevolvingUtilizationOfUnsecuredLines_woe` is the most influential feature in the LightGBM model.
