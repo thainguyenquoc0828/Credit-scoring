@@ -1,226 +1,326 @@
-# Credit Scoring with WOE, LightGBM & SHAP Explainability
+# Credit Scoring with WOE & Logistic Regression
 
 ## 📑 Table of Contents
 
 * [📌 Overview](#-overview)
 * [📂 Dataset](#-dataset)
-* [🔄 Workflow](#-workflow)
+* [🔎 Exploratory Data Analysis](#-exploratory-data-analysis)
+* [🔄 Preprocessing Pipeline](#-preprocessing-pipeline)
+* [🤖 Model Training](#-model-training)
 * [📊 Model Evaluation](#-model-evaluation)
 * [📤 Kaggle Submission](#-kaggle-submission)
-* [🔍 Interpretability & Insights](#-interpretability--insights)
-
-  * [Individual Predictions](#individual-predictions)
-  * [Global Feature Importance](#global-feature-importance)
 * [📎 References](#-references)
 
 ---
 
 ## 📌 Overview
 
-This project implements a complete **credit risk prediction pipeline** using the Kaggle *Give Me Some Credit* dataset.
+This project builds a **credit scoring pipeline** using the Kaggle *Give Me Some Credit* dataset.
 
-The objective is to predict whether a borrower will experience serious financial distress within the next two years. The notebook combines leakage-safe preprocessing, **Weight of Evidence (WOE)** transformation, hyperparameter optimization, gradient boosting models, and **SHAP-based explainability**.
+The objective is to predict whether a borrower will experience serious financial distress within the next two years. The project follows a traditional credit risk modeling workflow, including exploratory data analysis, leakage-safe preprocessing, **Weight of Evidence (WOE)** transformation, feature selection using **Information Value** and **VIF**, and final model training with **Logistic Regression**.
 
-The final model selected for submission is **LightGBM**, which achieved the best validation AUC among the evaluated models.
+The final model is designed to be interpretable and suitable for credit scoring applications.
 
 ---
 
 ## 📂 Dataset
 
 * **Source**: Kaggle’s *Give Me Some Credit* dataset
+
 * **Task**: Binary classification
+
 * **Target variable**: `SeriousDlqin2yrs`
 
   * `1`: borrower experienced serious financial distress within two years
   * `0`: borrower did not experience serious financial distress
-* **Features**: Financial and demographic variables, including:
 
-  * Revolving utilization of unsecured credit lines
-  * Age
-  * Debt ratio
-  * Monthly income
-  * Number of open credit lines and loans
-  * Delinquency history
-  * Number of dependents
+* **Main features**:
+
+  * `RevolvingUtilizationOfUnsecuredLines`
+  * `age`
+  * `NumberOfTime30-59DaysPastDueNotWorse`
+  * `DebtRatio`
+  * `MonthlyIncome`
+  * `NumberOfOpenCreditLinesAndLoans`
+  * `NumberOfTimes90DaysLate`
+  * `NumberRealEstateLoansOrLines`
+  * `NumberOfTime60-89DaysPastDueNotWorse`
+  * `NumberOfDependents`
 
 ---
 
-## 🔄 Workflow
+## 🔎 Exploratory Data Analysis
 
-### 1. Leakage-Safe Data Splitting
+The notebook `exploratory-data-analysis.ipynb` investigates data quality, feature distributions, outliers, missing values, target imbalance, and relationships between predictors and the target.
 
-The dataset is split into training and validation sets before any preprocessing step:
+Main findings:
+
+* The dataset is highly imbalanced, with only about **6.7%** of borrowers having target value `1`.
+
+* Missing values appear mainly in:
+
+  * `MonthlyIncome`
+  * `NumberOfDependents`
+
+* Several variables contain abnormal or extreme values:
+
+  * `age = 0`
+  * very large `DebtRatio`
+  * very large `RevolvingUtilizationOfUnsecuredLines`
+  * delinquency variables with abnormal values such as `96` and `98`
+
+* Most numerical variables are right-skewed.
+
+* `age` has an approximately normal distribution compared with other variables.
+
+* `RevolvingUtilizationOfUnsecuredLines` and `age` show clear separation between target classes.
+
+* Delinquency-related variables are strongly related to default risk.
+
+* The delinquency variables are highly correlated with each other, which may cause multicollinearity in Logistic Regression.
+
+---
+
+## 🔄 Preprocessing Pipeline
+
+The preprocessing logic is implemented in `preprocessing.py`.
+
+The pipeline contains three custom transformers:
 
 ```python
-train_test_split(..., stratify=y)
+preprocess_pipeline = Pipeline([
+    ("cleaner", CreditDataCleaner()),
+    ("woe_iv", WOEIVTransformer(
+        target="SeriousDlqin2yrs",
+        iv_threshold=0.02,
+        bin_num_limit=5
+    )),
+    ("vif", VIFSelector(threshold=5.0)),
+])
 ```
 
-This ensures that all preprocessing statistics are learned only from the training set and then applied to the validation and test sets.
+### 1. CreditDataCleaner
+
+This transformer handles abnormal values and missing values.
+
+Steps:
+
+* Replace abnormal values `96` and `98` in delinquency variables with the median calculated from the training set.
+* Impute missing `NumberOfDependents` using the training-set median.
+* Replace invalid `age = 0` with the median valid age from the training set.
+
+Affected delinquency variables:
+
+```python
+NumberOfTime30-59DaysPastDueNotWorse
+NumberOfTimes90DaysLate
+NumberOfTime60-89DaysPastDueNotWorse
+```
 
 ---
 
-### 2. Data Preprocessing
+### 2. WOEIVTransformer
 
-The preprocessing pipeline includes:
+This transformer applies **Weight of Evidence** binning using `scorecardpy`.
 
-* Removing features with more than **30% missing values**, based only on the training set
-* Capping outliers at the **99th percentile**, using thresholds calculated from the training set
-* Median imputation for missing values
-* Removing highly collinear variables using **VIF > 10**
-* Applying the same fitted preprocessing steps to validation and test data
+Main steps:
 
-In the current experiment:
+* Fit WOE bins on the training data only.
+* Calculate **Information Value** for each variable.
+* Keep variables with:
 
-* No features were removed due to missing rate > 30%
-* No features were removed due to VIF > 10
+```python
+IV >= 0.02
+```
 
----
+* Transform raw features into WOE-transformed features.
 
-### 3. WOE Transformation
+Example transformed feature name:
 
-After preprocessing, the features are transformed using **Weight of Evidence (WOE)** binning with `scorecardpy`.
+```text
+age_woe
+```
 
-WOE transformation is commonly used in credit scoring because it:
-
-* Converts raw numerical variables into risk-oriented representations
-* Improves interpretability
-* Works well with traditional scorecard models such as Logistic Regression
-* Provides stable transformed features for tree-based models such as XGBoost and LightGBM
-
-The WOE bins are fitted only on the training set and then applied to the validation and test sets.
+WOE transformation is useful in credit scoring because it creates monotonic, risk-oriented feature representations and improves interpretability for Logistic Regression.
 
 ---
 
-### 4. Model Training and Hyperparameter Optimization
+### 3. VIFSelector
 
-Three models are trained and compared:
+This transformer removes multicollinearity among WOE-transformed features.
 
-1. **Logistic Regression**
-2. **XGBoost**
-3. **LightGBM**
+Main steps:
 
-Hyperparameter optimization is performed using **Hyperopt** with Tree-structured Parzen Estimator search.
+* Calculate **Variance Inflation Factor** for all transformed variables.
+* Iteratively remove the variable with the highest VIF.
+* Stop when all remaining variables satisfy:
 
-For XGBoost and LightGBM, early stopping is used with validation AUC as the monitoring metric.
+```python
+VIF <= 5.0
+```
 
-Class imbalance is handled using:
+---
 
-* `class_weight="balanced"` for Logistic Regression
-* `scale_pos_weight` for XGBoost and LightGBM
+## 🤖 Model Training
+
+The model training workflow is implemented in `training.ipynb`.
+
+The training process includes:
+
+1. Load training data from:
+
+```python
+data/cs-training.csv
+```
+
+2. Remove duplicate rows.
+
+3. Split the data into training and validation sets:
+
+```python
+train_test_split(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
+```
+
+4. Build a full modeling pipeline:
+
+```python
+full_pipeline = Pipeline([
+    ("preprocess", preprocess_pipeline),
+    ("clf", LogisticRegression(max_iter=1000))
+])
+```
+
+5. Tune Logistic Regression hyperparameters using 5-fold Stratified Cross-Validation.
+
+Grid search space:
+
+```python
+param_grid = {
+    "clf__C": [0.01, 0.1, 1.0, 10.0],
+    "clf__penalty": ["l1"],
+    "clf__solver": ["liblinear"],
+}
+```
+
+6. Select the best model using validation **ROC-AUC**.
 
 ---
 
 ## 📊 Model Evaluation
 
-The models are evaluated on the validation set using:
+The main evaluation metric is:
 
-* **AUC-ROC**
-* **F1-score**
-* **Recall**
+```text
+ROC-AUC
+```
 
-| Model               |      AUC | F1-score |   Recall |
-| ------------------- | -------: | -------: | -------: |
-| LightGBM            | 0.863189 | 0.328759 | 0.788529 |
-| XGBoost             | 0.862993 | 0.329778 | 0.786534 |
-| Logistic Regression | 0.860437 | 0.327624 | 0.787032 |
+After hyperparameter tuning, the best Logistic Regression pipeline is evaluated on the validation set:
 
-LightGBM achieved the highest validation AUC and was selected as the final model.
+```python
+valid_auc = roc_auc_score(y_valid, y_pred_proba)
+```
 
-However, the performance gap between LightGBM and XGBoost is very small, indicating that both gradient boosting models perform similarly on this dataset. Logistic Regression also remains competitive after WOE transformation, showing the effectiveness of WOE-based credit scoring features.
+The project also fits a final `statsmodels.Logit` model on the transformed features to generate a statistical summary table, including:
+
+* coefficient β
+* standard error
+* z-value
+* p-value
+* odds ratio
+* 95% confidence interval
+
+Before fitting the `statsmodels` model, two WOE features are manually removed:
+
+```python
+drop_cols = ["MonthlyIncome_woe", "NumberOfDependents_woe"]
+```
+
+The final statistics table is used to inspect the direction, magnitude, and significance of each predictor.
 
 ---
 
 ## 📤 Kaggle Submission
 
-The final Kaggle submission is generated using the selected **LightGBM** model.
+The final submission is generated in `training.ipynb`.
 
-The same preprocessing pipeline fitted on the training data is applied to the Kaggle test set:
+The test data is loaded from:
 
-1. Keep selected columns
-2. Cap outliers using training-set 99th percentile values
-3. Impute missing values using the training-fitted median imputer
-4. Keep VIF-selected variables
-5. Apply WOE bins fitted on the training set
-6. Predict probabilities using the final LightGBM model
+```python
+data/cs-test.csv
+```
 
-The submission file follows Kaggle’s required format:
+The fitted preprocessing pipeline is applied to the test set, then the final Logistic Regression model predicts default probabilities.
+
+Submission format:
 
 ```text
 Id,Probability
-1,0.586418
-2,0.426647
-3,0.139034
+1,0.123456
+2,0.067891
+3,0.245678
 ...
 ```
 
-The generated submission file contains:
+The output file is saved as:
 
-```text
-101503 rows × 2 columns
+```python
+submission.csv
 ```
 
 ---
 
-## 🔍 Interpretability & Insights
-
-Model interpretability is performed using **SHAP values** on the final LightGBM model.
-
-Since the model is trained on WOE-transformed features, the SHAP explanations should be interpreted as the contribution of each **WOE feature**, not the original raw feature value.
-
-For example:
+## 📁 Project Structure
 
 ```text
-RevolvingUtilizationOfUnsecuredLines_woe
-```
-
-represents the WOE-transformed version of:
-
-```text
-RevolvingUtilizationOfUnsecuredLines
+.
+├── data/
+│   ├── cs-training.csv
+│   └── cs-test.csv
+├── exploratory-data-analysis.ipynb
+├── preprocessing.py
+├── training.ipynb
+├── submission.csv
+└── README.md
 ```
 
 ---
 
-### Individual Predictions
+## ⚙️ Installation
 
-#### Client 10683
+Install the required libraries:
 
-<p align="center">
-  <img src="figures/Client 10683.png" width="800" alt="Client 10683 SHAP Force Plot">
-</p>
-
-For this client, features such as `RevolvingUtilizationOfUnsecuredLines_woe` and `age_woe` reduce the predicted risk, while `DebtRatio_woe` has a minor positive contribution. The final prediction is below the base value, indicating a relatively low probability of serious financial distress.
+```bash
+pip install numpy pandas scikit-learn statsmodels scorecardpy scipy matplotlib
+```
 
 ---
 
-#### Client 8652
+## ▶️ How to Run
 
-<p align="center">
-  <img src="figures/Client 8652.png" width="800" alt="Client 8652 SHAP Force Plot">
-</p>
+Run exploratory analysis:
 
-For this client, features such as `age_woe`, `DebtRatio_woe`, and `RevolvingUtilizationOfUnsecuredLines_woe` contribute to increasing the predicted risk. The final prediction is above the base value, suggesting a higher-than-average probability of serious financial distress.
+```bash
+jupyter notebook exploratory-data-analysis.ipynb
+```
 
----
+Run preprocessing, model training, evaluation, and submission generation:
 
-### Global Feature Importance
+```bash
+jupyter notebook training.ipynb
+```
 
-#### SHAP Summary Plot
+Make sure the input files are placed in the `data/` directory:
 
-<p align="center">
-  <img src="figures/SHAP 1.png" width="800" alt="SHAP Summary Plot">
-</p>
-
-The SHAP summary plot shows that `RevolvingUtilizationOfUnsecuredLines_woe` is the most influential feature in the LightGBM model.
-
-Other important predictors include:
-
-* `NumberOfTime30-59DaysPastDueNotWorse_woe`
-* `NumberOfTimes90DaysLate_woe`
-* `DebtRatio_woe`
-* `age_woe`
-
-In general, delinquency-related variables and high credit utilization contribute strongly to increasing predicted default risk, while age-related effects tend to reduce risk for certain WOE bins.
+```text
+data/cs-training.csv
+data/cs-test.csv
+```
 
 ---
 
@@ -228,7 +328,5 @@ In general, delinquency-related variables and high credit utilization contribute
 
 * **Dataset**: [Kaggle - Give Me Some Credit](https://www.kaggle.com/c/GiveMeSomeCredit)
 * **scorecardpy Documentation**: https://github.com/ShichenXie/scorecardpy
-* **LightGBM Documentation**: https://lightgbm.readthedocs.io/
-* **XGBoost Documentation**: https://xgboost.readthedocs.io/
-* **SHAP Documentation**: https://shap.readthedocs.io/
-* **Hyperopt Documentation**: http://hyperopt.github.io/hyperopt/
+* **scikit-learn Documentation**: https://scikit-learn.org/
+* **statsmodels Documentation**: https://www.statsmodels.org/
